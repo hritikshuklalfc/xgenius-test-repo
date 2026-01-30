@@ -1,247 +1,162 @@
+import streamlit as st
 import asyncio
 import aiohttp
-import nest_asyncio
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import streamlit as st
 from understat import Understat
+from mplsoccer import Pitch
+import matplotlib.pyplot as plt
 
+# --- CONFIGURATION ---
+st.set_page_config(layout="wide", page_title="LFC Analytics Hub")
+
+# Dark Mode Style for Plots
+plt.style.use('dark_background')
+
+# Avoid "Event Loop is Closed" errors in Streamlit
+import nest_asyncio
 nest_asyncio.apply()
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-st.set_page_config(page_title="xG Flow", layout="wide")
-
-st.title("xG Flow")
-st.caption("Fetch match data from Understat and plot xG momentum for a chosen match.")
-
-LEAGUES = ["epl", "la_liga", "bundesliga", "serie_a", "ligue1", "rfpl"]
-
-@st.cache_data(show_spinner=False)
-def _get_team_results(team_name: str, season: int):
+# --- 1. THE CACHED DATA LOADER (Prevents IP Bans) ---
+@st.cache_data
+def get_team_matches(team_name, season):
+    """Fetches the schedule. Cached so it only runs once per team/season."""
     async def _fetch():
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
+        async with aiohttp.ClientSession() as session:
             understat = Understat(session)
-            return await understat.get_team_results(team_name, season)
-
+            return await understat.get_team_results(team_name, int(season))
+    
+    # We run the async loop safely inside this function
     return asyncio.run(_fetch())
 
-
-@st.cache_data(show_spinner=False)
-def _get_teams(league_name: str, season: int):
+@st.cache_data
+def get_match_shots(match_id):
+    """Fetches specific match shots. Cached for performance."""
     async def _fetch():
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
-            understat = Understat(session)
-            return await understat.get_teams(league_name, season)
-
-    return asyncio.run(_fetch())
-
-
-@st.cache_data(show_spinner=False)
-def _get_match_shots(match_id: str):
-    async def _fetch():
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
+        async with aiohttp.ClientSession() as session:
             understat = Understat(session)
             return await understat.get_match_shots(match_id)
-
+            
     return asyncio.run(_fetch())
 
+# --- 2. THE SIDEBAR (User Inputs) ---
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/en/0/0c/Liverpool_FC.svg", width=100)
+st.sidebar.title("Data Scout Pro")
 
-def _clean_shots_df(df: pd.DataFrame) -> pd.DataFrame:
-    cols = ["X", "Y", "xG", "minute"]
-    for col in cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+target_team = st.sidebar.text_input("Team Name", value="Liverpool")
+season = st.sidebar.text_input("Season (Year)", value="2024")
+btn_load = st.sidebar.button("Find Matches")
 
+# --- 3. THE MATCH SELECTOR ---
+if btn_load or 'matches' in st.session_state:
+    # Load data if button clicked or already loaded
+    if btn_load:
+        with st.spinner(f"Scouting {target_team}..."):
+            st.session_state['matches'] = get_team_matches(target_team, season)
 
-def _build_match_list_df(match_data: list) -> pd.DataFrame:
-    df_matches = pd.DataFrame(match_data)
-    if df_matches.empty:
-        return df_matches
+    matches_data = st.session_state.get('matches')
+    
+    if matches_data:
+        df_matches = pd.DataFrame(matches_data)
+        # Filter for played matches only
+        df_matches = df_matches[df_matches['goals'].apply(lambda x: x is not None)]
+        
+        # Create a readable label for the dropdown
+        df_matches['match_label'] = df_matches.apply(
+            lambda x: f"{x['datetime'][:10]} | vs {x['a']['title'] if x['side']=='h' else x['h']['title']} ({x['goals']['h']}-{x['goals']['a']})", 
+            axis=1
+        )
+        
+        # The Dropdown Menu
+        selected_match = st.selectbox("Select a Match:", df_matches['match_label'].tolist())
+        
+        # Get the ID of the selected match
+        match_id = df_matches[df_matches['match_label'] == selected_match]['id'].values[0]
 
-    df_matches = df_matches[df_matches["goals"].apply(lambda x: x is not None)]
+        # --- 4. THE VISUALIZATION ENGINE ---
+        if st.button("Analyze Game"):
+            shots_data = get_match_shots(match_id)
+            
+            # Process Data (Same logic as before)
+            df_home = pd.DataFrame(shots_data['h'])
+            df_away = pd.DataFrame(shots_data['a'])
 
-    df_matches["opponent"] = np.where(
-        df_matches["side"] == "h",
-        df_matches["a"].apply(lambda x: x["title"]),
-        df_matches["h"].apply(lambda x: x["title"]),
-    )
+            for df in [df_home, df_away]:
+                for col in ['X', 'Y', 'xG', 'minute']:
+                    df[col] = pd.to_numeric(df[col])
 
-    df_matches["result"] = df_matches.apply(
-        lambda row: str(row["goals"]["h"]) + "-" + str(row["goals"]["a"]),
-        axis=1,
-    )
+            # Who is who?
+            home_team_name = df_home['h_team'].iloc[0]
+            away_team_name = df_away['a_team'].iloc[0]
 
-    return df_matches
-
-
-def _get_flow_data(df: pd.DataFrame):
-    minutes = [0] + df["minute"].tolist()
-    xg_flow = [0] + df["xG_cumsum"].tolist()
-
-    last_min = max(minutes[-1], 95)
-    minutes.append(last_min)
-    xg_flow.append(xg_flow[-1])
-
-    return minutes, xg_flow
-
-
-with st.sidebar:
-    st.header("Inputs")
-    league = st.selectbox("League", options=LEAGUES, index=0)
-    season = st.number_input("Season year", min_value=2010, max_value=2030, value=2025, step=1)
-    use_team_list = st.checkbox("Use team list", value=True)
-
-    team_name = ""
-    if use_team_list:
-        try:
-            teams = _get_teams(league, int(season))
-            team_names = sorted({team.get("title") for team in teams if team.get("title")})
-            if team_names:
-                team_name = st.selectbox("Team", options=team_names)
+            if home_team_name == target_team:
+                my_df, opp_df = df_home, df_away
+                opp_name = away_team_name
             else:
-                st.warning("No teams found for this league/season. Use manual entry.")
-                use_team_list = False
-        except Exception as exc:
-            st.warning(f"Unable to load teams list: {exc}. Use manual entry.")
-            use_team_list = False
+                my_df, opp_df = df_away, df_home
+                opp_name = home_team_name
 
-    if not use_team_list:
-        team_name = st.text_input("Team name", value="Liverpool")
-    fetch_matches = st.button("Fetch matches")
+            # --- TAB 1: SHOT MAP ---
+            tab1, tab2 = st.tabs(["🎯 Shot Map", "📈 xG Flow"])
+            
+            with tab1:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    # Draw Pitch
+                    pitch = Pitch(pitch_type='opta', pitch_color='#1e1e1e', line_color='#c7d5cc')
+                    fig, ax = pitch.draw(figsize=(12, 8))
+                    
+                    # Plot My Team (Right)
+                    pitch.scatter(my_df["X"]*100, my_df["Y"]*100, s=my_df["xG"]*500, 
+                                c="#C8102E", edgecolors="white", ax=ax, label=target_team)
+                    
+                    # Plot Opponent (Left - Flipped)
+                    pitch.scatter(100-(opp_df["X"]*100), 100-(opp_df["Y"]*100), s=opp_df["xG"]*500, 
+                                c="#1f77b4", edgecolors="white", ax=ax, label=opp_name)
+                    
+                    # Goals (Stars)
+                    my_goals = my_df[my_df["result"]=="Goal"]
+                    pitch.scatter(my_goals["X"]*100, my_goals["Y"]*100, s=my_goals["xG"]*500, 
+                                marker="*", c="gold", edgecolors="red", zorder=10, ax=ax)
+                    
+                    opp_goals = opp_df[opp_df["result"]=="Goal"]
+                    pitch.scatter(100-(opp_goals["X"]*100), 100-(opp_goals["Y"]*100), s=opp_goals["xG"]*500, 
+                                marker="*", c="white", edgecolors="blue", zorder=10, ax=ax)
 
-if fetch_matches:
-    if not team_name:
-        st.error("Please enter a team name.")
-    else:
-        with st.spinner("Fetching matches..."):
-            try:
-                match_data = _get_team_results(team_name.strip(), int(season))
-            except Exception as exc:
-                st.error(f"Failed to fetch matches: {exc}")
-                match_data = []
+                    ax.set_title(f"{target_team} vs {opp_name}", fontsize=20, color="white")
+                    st.pyplot(fig)
+                
+                with col2:
+                    st.metric(label=f"{target_team} xG", value=f"{my_df['xG'].sum():.2f}")
+                    st.metric(label=f"{opp_name} xG", value=f"{opp_df['xG'].sum():.2f}")
 
-        df_matches = _build_match_list_df(match_data)
+            # --- TAB 2: xG FLOW ---
+            with tab2:
+                # Prepare Flow Data
+                def get_flow(df):
+                    df = df.sort_values(by='minute')
+                    df['xG_cumsum'] = df['xG'].cumsum()
+                    mins = [0] + df['minute'].tolist() + [95]
+                    flow = [0] + df['xG_cumsum'].tolist() + [df['xG_cumsum'].iloc[-1]]
+                    return mins, flow
 
-        if df_matches.empty:
-            st.warning("No matches found. Check the team name and season.")
-        else:
-            st.subheader(f"Match list for {team_name.upper()}")
-            display_cols = ["id", "datetime", "opponent", "result", "side"]
-            st.dataframe(df_matches[display_cols].tail(10), use_container_width=True)
+                my_mins, my_flow = get_flow(my_df)
+                opp_mins, opp_flow = get_flow(opp_df)
 
-            match_id = st.selectbox(
-                "Select a match ID",
-                options=df_matches["id"].tolist(),
-            )
-
-            if match_id:
-                with st.spinner("Fetching shot data..."):
-                    try:
-                        shot_data = _get_match_shots(str(match_id))
-                    except Exception as exc:
-                        st.error(f"Failed to fetch match shots: {exc}")
-                        shot_data = None
-
-                if shot_data:
-                    df_home = pd.DataFrame(shot_data["h"])
-                    df_away = pd.DataFrame(shot_data["a"])
-
-                    if df_home.empty or df_away.empty:
-                        st.warning("No shot data available for this match.")
-                    else:
-                        df_home = _clean_shots_df(df_home)
-                        df_away = _clean_shots_df(df_away)
-
-                        home_team_name = df_home["h_team"].iloc[0]
-                        away_team_name = df_home["a_team"].iloc[0]
-
-                        if home_team_name.lower() == team_name.strip().lower():
-                            my_team_df = df_home
-                            opp_df = df_away
-                            opp_name = away_team_name
-                            my_side = "Home"
-                        else:
-                            my_team_df = df_away
-                            opp_df = df_home
-                            opp_name = home_team_name
-                            my_side = "Away"
-
-                        st.info(f"Data Loaded: {team_name} ({my_side} vs {opp_name})")
-                        st.write(f"Home Shots: {len(df_home)} | Away Shots: {len(df_away)}")
-
-                        my_team_df = my_team_df.sort_values(by="minute")
-                        my_team_df["xG_cumsum"] = my_team_df["xG"].cumsum()
-
-                        opp_df = opp_df.sort_values(by="minute")
-                        opp_df["xG_cumsum"] = opp_df["xG"].cumsum()
-
-                        my_mins, my_flow = _get_flow_data(my_team_df)
-                        opp_mins, opp_flow = _get_flow_data(opp_df)
-
-                        fig, ax = plt.subplots(figsize=(12, 6))
-                        fig.set_facecolor("#1e1e1e")
-                        ax.set_facecolor("#1e1e1e")
-
-                        ax.step(my_mins, my_flow, where="post", color="#c8102e", linewidth=3, label=team_name)
-                        ax.step(opp_mins, opp_flow, where="post", color="#1f77b4", linewidth=3, label=opp_name)
-
-                        ax.fill_between(my_mins, my_flow, step="post", color="#c8102e", alpha=0.2)
-                        ax.fill_between(opp_mins, opp_flow, step="post", color="#1f77b4", alpha=0.2)
-
-                        my_goals = my_team_df[my_team_df["result"] == "Goal"]
-                        opp_goal = opp_df[opp_df["result"] == "Goal"]
-
-                        for _, row in my_goals.iterrows():
-                            ax.scatter(
-                                row["minute"],
-                                row["xG_cumsum"],
-                                s=150,
-                                color="gold",
-                                edgecolors="red",
-                                zorder=10,
-                                label="Goal",
-                            )
-
-                        for _, row in opp_goal.iterrows():
-                            ax.scatter(
-                                row["minute"],
-                                row["xG_cumsum"],
-                                s=150,
-                                color="white",
-                                edgecolors="red",
-                                zorder=10,
-                                label="Goal",
-                            )
-
-                        max_xg = max(my_flow[-1], opp_flow[-1])
-                        ax.set_ylim(0, max_xg + 0.5)
-                        ax.set_xlim(0, 98)
-
-                        ax.set_xlabel("Minute", fontsize=14, color="white")
-                        ax.set_ylabel("Cumulative xG", fontsize=14, color="white")
-                        ax.set_title(
-                            f"xG Momentum: {team_name} vs {opp_name}",
-                            fontsize=18,
-                            color="white",
-                            pad=15,
-                        )
-
-                        ax.tick_params(axis="x", colors="white")
-                        ax.tick_params(axis="y", colors="white")
-                        ax.grid(color="gray", linestyle="--", linewidth=0.5, alpha=0.3)
-
-                        handles, labels = ax.get_legend_handles_labels()
-                        by_label = dict(zip(labels, handles))
-                        ax.legend(
-                            by_label.values(),
-                            by_label.keys(),
-                            loc="upper left",
-                            facecolor="#1e1e1e",
-                            labelcolor="white",
-                        )
-
-                        st.pyplot(fig, use_container_width=True)
+                fig2, ax2 = plt.subplots(figsize=(12, 6))
+                fig2.set_facecolor('#1e1e1e')
+                ax2.set_facecolor('#1e1e1e')
+                
+                ax2.step(my_mins, my_flow, where='post', color='#C8102E', linewidth=3, label=target_team)
+                ax2.step(opp_mins, opp_flow, where='post', color='#1f77b4', linewidth=3, label=opp_name)
+                ax2.fill_between(my_mins, my_flow, step="post", color='#C8102E', alpha=0.2)
+                ax2.fill_between(opp_mins, opp_flow, step="post", color='#1f77b4', alpha=0.2)
+                
+                # Styling
+                ax2.set_xlabel("Minute", color="white")
+                ax2.set_ylabel("Cumulative xG", color="white")
+                ax2.grid(alpha=0.3)
+                ax2.tick_params(colors="white")
+                ax2.legend(facecolor='#1e1e1e', labelcolor='white')
+                
+                st.pyplot(fig2)
