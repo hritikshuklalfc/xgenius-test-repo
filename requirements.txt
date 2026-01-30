@@ -1,9 +1,8 @@
 streamlit
-pandas
-numpy
-plotly
-requests
-aiohttp
-nest_asyncio
+mplsoccer
 understat
+aiohttp
+pandas
 matplotlib
+nest_asyncio
+numpy
