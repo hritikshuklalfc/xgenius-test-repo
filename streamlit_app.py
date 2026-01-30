@@ -18,12 +18,24 @@ st.set_page_config(page_title="xG Flow", layout="wide")
 st.title("xG Flow")
 st.caption("Fetch match data from Understat and plot xG momentum for a chosen match.")
 
+LEAGUES = ["epl", "la_liga", "bundesliga", "serie_a", "ligue1", "rfpl"]
+
 @st.cache_data(show_spinner=False)
 def _get_team_results(team_name: str, season: int):
     async def _fetch():
         async with aiohttp.ClientSession(headers=HEADERS) as session:
             understat = Understat(session)
             return await understat.get_team_results(team_name, season)
+
+    return asyncio.run(_fetch())
+
+
+@st.cache_data(show_spinner=False)
+def _get_teams(league_name: str, season: int):
+    async def _fetch():
+        async with aiohttp.ClientSession(headers=HEADERS) as session:
+            understat = Understat(session)
+            return await understat.get_teams(league_name, season)
 
     return asyncio.run(_fetch())
 
@@ -79,8 +91,26 @@ def _get_flow_data(df: pd.DataFrame):
 
 with st.sidebar:
     st.header("Inputs")
-    team_name = st.text_input("Team name", value="Liverpool")
+    league = st.selectbox("League", options=LEAGUES, index=0)
     season = st.number_input("Season year", min_value=2010, max_value=2030, value=2025, step=1)
+    use_team_list = st.checkbox("Use team list", value=True)
+
+    team_name = ""
+    if use_team_list:
+        try:
+            teams = _get_teams(league, int(season))
+            team_names = sorted({team.get("title") for team in teams if team.get("title")})
+            if team_names:
+                team_name = st.selectbox("Team", options=team_names)
+            else:
+                st.warning("No teams found for this league/season. Use manual entry.")
+                use_team_list = False
+        except Exception as exc:
+            st.warning(f"Unable to load teams list: {exc}. Use manual entry.")
+            use_team_list = False
+
+    if not use_team_list:
+        team_name = st.text_input("Team name", value="Liverpool")
     fetch_matches = st.button("Fetch matches")
 
 if fetch_matches:
