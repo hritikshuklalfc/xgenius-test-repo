@@ -2,7 +2,4 @@ streamlit
 mplsoccer
 understat
 aiohttp
-pandas
-matplotlib
 nest_asyncio
-numpy
