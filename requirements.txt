@@ -3,3 +3,7 @@ pandas
 numpy
 plotly
 requests
+aiohttp
+nest_asyncio
+understat
+matplotlib
