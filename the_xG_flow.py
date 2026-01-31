@@ -3,16 +3,14 @@ xG Flow script: fetches match results and shot data from Understat,
 then builds and displays an xG momentum chart for a selected match.
 """
 
-import asyncio
 import aiohttp
 import nest_asyncio
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import streamlit as st
 from understat import Understat
 
-
-nest_asyncio.apply()
 
 HEADERS = {
     "User-Agent": (
