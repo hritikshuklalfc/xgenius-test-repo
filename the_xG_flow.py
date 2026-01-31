@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import streamlit as st
 from understat import Understat
 import understat.utils as understat_utils
+import re
+import json
 
 
 nest_asyncio.apply()
@@ -40,6 +42,23 @@ HEADERS = {
 }
 
 
+# Patch the find_match function in understat.utils to handle None values
+def patched_find_match(scripts, pattern):
+    """Find pattern in scripts, handling None values"""
+    for script in scripts:
+        # Skip if script or script.string is None
+        if script is None or not hasattr(script, 'string') or script.string is None:
+            continue
+        match = re.search(pattern, script.string)
+        if match:
+            return match
+    return None
+
+
+# Replace the original function
+understat_utils.find_match = patched_find_match
+
+
 async def _patched_fetch(session, url):
     headers = {
         "X-Requested-With": "XMLHttpRequest",
@@ -54,17 +73,32 @@ understat_utils.fetch = _patched_fetch
 LEAGUES = ["epl", "la_liga", "bundesliga", "serie_a", "ligue1", "rfpl"]
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_team_results(team_name, season):
     async def _fetch():
         async with aiohttp.ClientSession(headers=HEADERS) as session:
             understat = Understat(session)
-            return await understat.get_team_results(team_name, season)
+            try:
+                return await understat.get_team_results(team_name, season)
+            except Exception as e:
+                # If it fails, try with different formatting of team name
+                st.warning(f"First attempt failed: {str(e)[:100]}")
+                # Try with lowercase
+                try:
+                    return await understat.get_team_results(team_name.lower(), season)
+                except:
+                    pass
+                # Try with title case
+                try:
+                    return await understat.get_team_results(team_name.title(), season)
+                except:
+                    pass
+                raise e
 
     return asyncio.run(_fetch())
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_teams(league_name, season):
     async def _fetch():
         async with aiohttp.ClientSession(headers=HEADERS) as session:
@@ -74,7 +108,7 @@ def get_teams(league_name, season):
     return asyncio.run(_fetch())
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_match_shots(match_id):
     async def _fetch():
         async with aiohttp.ClientSession(headers=HEADERS) as session:
@@ -87,7 +121,7 @@ def get_match_shots(match_id):
 def clean_df(df):
     cols = ["X", "Y", "xG", "minute"]
     for col in cols:
-        df[col] = pd.to_numeric(df[col])
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
 
@@ -226,13 +260,42 @@ if st.button("Load Matches", type="primary"):
                 else:
                     st.warning("No matches found. Please check the team name and season.")
                     
+            except TypeError as e:
+                st.error("⚠️ Understat Library Error")
+                st.markdown("""
+                The Understat library is having trouble parsing data from the website. This can happen when:
+                - The website structure has changed
+                - The team name format doesn't match
+                - The season data isn't available
+                
+                **Troubleshooting:**
+                1. Try unchecking "Use team list" and entering the team name manually
+                2. Make sure the team name is spelled exactly as it appears on understat.com
+                3. Try a different season (2023, 2022, 2021)
+                4. Clear the cache and try again (refresh the page)
+                
+                **Common team name formats:**
+                - Liverpool (not liverpool)
+                - Manchester City (not Man City)
+                - Manchester United (not Man Utd)
+                """)
+                
+                with st.expander("Show technical details"):
+                    import traceback
+                    st.code(traceback.format_exc())
+                    
             except Exception as e:
                 st.error(f"Error loading matches: {e}")
-                st.info("💡 Tips:\n- Make sure the team name matches exactly (e.g., 'Liverpool', not 'liverpool')\n- Try a different season year\n- The team may not have data for that season in Understat")
+                st.info("""
+                💡 **Tips:**
+                - Verify the team name matches exactly as shown on understat.com
+                - Try different season years (2024, 2023, 2022)
+                - Some teams may not have data for certain seasons
+                - Try clearing your browser cache
+                """)
                 
-                # Show detailed error for debugging
-                import traceback
                 with st.expander("Show detailed error"):
+                    import traceback
                     st.code(traceback.format_exc())
     else:
         st.warning("Please enter both team name and season year.")
