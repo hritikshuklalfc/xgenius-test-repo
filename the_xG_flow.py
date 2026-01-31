@@ -5,13 +5,72 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
-from understat import Understat
-import understat.utils as understat_utils
 import re
 import json
+import codecs
 
+# Import understat components
+from understat import Understat
+import understat.utils as understat_utils
 
 nest_asyncio.apply()
+
+# CRITICAL: Monkey-patch BEFORE any understat operations
+def patched_find_match(scripts, pattern):
+    """Find pattern in scripts, handling None values"""
+    for script in scripts:
+        # Skip if script or script.string is None
+        if script is None or not hasattr(script, 'string') or script.string is None:
+            continue
+        try:
+            match = re.search(pattern, script.string)
+            if match:
+                return match
+        except (TypeError, AttributeError):
+            continue
+    return None
+
+
+def patched_decode_data(match):
+    """Decode data from regex match, handling None"""
+    if match is None:
+        return None
+    try:
+        byte_data = codecs.escape_decode(match.group(1))
+        return json.loads(byte_data[0].decode("utf-8"))
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        return None
+
+
+async def patched_get_data(session, url, pattern_type):
+    """Get data from URL with better error handling"""
+    from bs4 import BeautifulSoup
+    
+    html = await understat_utils.fetch(session, url)
+    soup = BeautifulSoup(html, "html.parser")
+    scripts = soup.find_all("script")
+    
+    pattern = understat_utils.LEAGUE_URL_MAPPING.get(
+        pattern_type, understat_utils.LEAGUE_URL_MAPPING["playersData"]
+    )
+    
+    match = patched_find_match(scripts, pattern)
+    
+    if match is None:
+        raise ValueError(f"Could not find data pattern '{pattern_type}' in page. The website structure may have changed.")
+    
+    data = patched_decode_data(match)
+    
+    if data is None:
+        raise ValueError(f"Could not decode data for pattern '{pattern_type}'")
+    
+    return data
+
+
+# Apply all patches
+understat_utils.find_match = patched_find_match
+understat_utils.decode_data = patched_decode_data
+understat_utils.get_data = patched_get_data
 
 st.set_page_config(page_title="xG Flow Analyzer", page_icon="⚽", layout="wide")
 
@@ -42,23 +101,6 @@ HEADERS = {
 }
 
 
-# Patch the find_match function in understat.utils to handle None values
-def patched_find_match(scripts, pattern):
-    """Find pattern in scripts, handling None values"""
-    for script in scripts:
-        # Skip if script or script.string is None
-        if script is None or not hasattr(script, 'string') or script.string is None:
-            continue
-        match = re.search(pattern, script.string)
-        if match:
-            return match
-    return None
-
-
-# Replace the original function
-understat_utils.find_match = patched_find_match
-
-
 async def _patched_fetch(session, url):
     headers = {
         "X-Requested-With": "XMLHttpRequest",
@@ -78,24 +120,27 @@ def get_team_results(team_name, season):
     async def _fetch():
         async with aiohttp.ClientSession(headers=HEADERS) as session:
             understat = Understat(session)
-            try:
-                return await understat.get_team_results(team_name, season)
-            except Exception as e:
-                # If it fails, try with different formatting of team name
-                st.warning(f"First attempt failed: {str(e)[:100]}")
-                # Try with lowercase
-                try:
-                    return await understat.get_team_results(team_name.lower(), season)
-                except:
-                    pass
-                # Try with title case
-                try:
-                    return await understat.get_team_results(team_name.title(), season)
-                except:
-                    pass
-                raise e
+            return await understat.get_team_results(team_name, season)
 
-    return asyncio.run(_fetch())
+    try:
+        return asyncio.run(_fetch())
+    except ValueError as e:
+        if "Could not find data pattern" in str(e):
+            st.error(f"⚠️ Data Pattern Not Found: {str(e)}")
+            st.markdown("""
+            **This usually means:**
+            - The team name doesn't match Understat's format exactly
+            - The season data is not available on Understat
+            - The Understat website structure has changed
+            
+            **Try:**
+            - Using the team dropdown (check "Use team list")
+            - A different season year (2023, 2022, 2021)
+            - Checking the exact team name on understat.com
+            """)
+        raise
+    except Exception as e:
+        raise
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -155,6 +200,7 @@ with col2:
         "Season Year",
         placeholder="e.g., 2024, 2023",
         help="Enter the year of the season",
+        value="2024"  # Default to 2024
     )
 
 use_team_list = st.checkbox("Use team list", value=True)
@@ -171,7 +217,7 @@ if use_team_list:
                 st.warning("No teams found for this league/season. Use manual entry.")
                 use_team_list = False
         except Exception as exc:
-            st.warning(f"Unable to load teams list: {exc}. Use manual entry.")
+            st.warning(f"Unable to load teams list: {str(exc)[:200]}. Use manual entry.")
             use_team_list = False
     else:
         st.info("Enter a season year to load the team list.")
@@ -260,38 +306,18 @@ if st.button("Load Matches", type="primary"):
                 else:
                     st.warning("No matches found. Please check the team name and season.")
                     
-            except TypeError as e:
-                st.error("⚠️ Understat Library Error")
-                st.markdown("""
-                The Understat library is having trouble parsing data from the website. This can happen when:
-                - The website structure has changed
-                - The team name format doesn't match
-                - The season data isn't available
-                
-                **Troubleshooting:**
-                1. Try unchecking "Use team list" and entering the team name manually
-                2. Make sure the team name is spelled exactly as it appears on understat.com
-                3. Try a different season (2023, 2022, 2021)
-                4. Clear the cache and try again (refresh the page)
-                
-                **Common team name formats:**
-                - Liverpool (not liverpool)
-                - Manchester City (not Man City)
-                - Manchester United (not Man Utd)
-                """)
-                
-                with st.expander("Show technical details"):
-                    import traceback
-                    st.code(traceback.format_exc())
+            except ValueError as e:
+                # Already handled in get_team_results
+                pass
                     
             except Exception as e:
-                st.error(f"Error loading matches: {e}")
-                st.info("""
-                💡 **Tips:**
-                - Verify the team name matches exactly as shown on understat.com
-                - Try different season years (2024, 2023, 2022)
-                - Some teams may not have data for certain seasons
-                - Try clearing your browser cache
+                st.error(f"❌ Error loading matches: {str(e)[:200]}")
+                st.markdown("""
+                💡 **Troubleshooting:**
+                1. ✅ Use the team dropdown ("Use team list") instead of typing
+                2. ✅ Try season 2024, 2023, or 2022
+                3. ✅ Verify team name on understat.com
+                4. ✅ Clear cache (press 'c' in the app)
                 """)
                 
                 with st.expander("Show detailed error"):
@@ -408,7 +434,7 @@ if st.session_state.matches_loaded:
                             label="Goal",
                         )
 
-                    max_xg = max(my_flow[-1], opp_flow[-1])
+                    max_xg = max(my_flow[-1], opp_flow[-1]) if my_flow[-1] > 0 or opp_flow[-1] > 0 else 1
                     ax.set_ylim(0, max_xg + 0.5)
                     ax.set_xlim(0, 98)
 
