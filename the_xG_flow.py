@@ -157,28 +157,59 @@ if st.button("Load Matches", type="primary"):
 
                 if match_data:
                     df_matches = pd.DataFrame(match_data)
-                    df_matches = df_matches[df_matches["goals"].apply(lambda x: x is not None)]
+                    
+                    # FIX: Add proper handling for None values in goals
+                    df_matches = df_matches[df_matches["goals"].notna()]
+                    
+                    # FIX: Add safer processing with proper None checks
+                    def get_opponent(row):
+                        try:
+                            if row["side"] == "h":
+                                team_data = row.get("a")
+                                if team_data and isinstance(team_data, dict):
+                                    return team_data.get("title", "Unknown")
+                            else:
+                                team_data = row.get("h")
+                                if team_data and isinstance(team_data, dict):
+                                    return team_data.get("title", "Unknown")
+                        except:
+                            pass
+                        return "Unknown"
+                    
+                    df_matches["opponent"] = df_matches.apply(get_opponent, axis=1)
+                    
+                    # FIX: Add safer result processing
+                    def get_result(row):
+                        try:
+                            goals = row.get("goals")
+                            if goals and isinstance(goals, dict):
+                                h_goals = goals.get("h", 0)
+                                a_goals = goals.get("a", 0)
+                                if h_goals is not None and a_goals is not None:
+                                    return f"{h_goals}-{a_goals}"
+                        except:
+                            pass
+                        return "N/A"
+                    
+                    df_matches["result"] = df_matches.apply(get_result, axis=1)
+                    
+                    # Filter out any matches with invalid data
+                    df_matches = df_matches[df_matches["opponent"] != "Unknown"]
+                    df_matches = df_matches[df_matches["result"] != "N/A"]
 
-                    df_matches["opponent"] = np.where(
-                        df_matches["side"] == "h",
-                        df_matches["a"].apply(lambda x: x["title"]),
-                        df_matches["h"].apply(lambda x: x["title"]),
-                    )
-
-                    df_matches["result"] = df_matches.apply(
-                        lambda row: str(row["goals"]["h"]) + "-" + str(row["goals"]["a"]),
-                        axis=1,
-                    )
-
-                    st.session_state.matches_loaded = True
-                    st.session_state.match_data = match_data
-                    st.session_state.df_matches = df_matches
-                    st.session_state.target_team = target_team
-                    st.success(f"✅ Found {len(df_matches)} matches for {target_team}")
+                    if len(df_matches) > 0:
+                        st.session_state.matches_loaded = True
+                        st.session_state.match_data = match_data
+                        st.session_state.df_matches = df_matches
+                        st.session_state.target_team = target_team
+                        st.success(f"✅ Found {len(df_matches)} matches for {target_team}")
+                    else:
+                        st.warning("No valid matches found. Please check the team name and season.")
                 else:
                     st.warning("No matches found. Please check the team name and season.")
             except Exception as e:
                 st.error(f"Error loading matches: {e}")
+                st.info("💡 Tip: Make sure the team name matches exactly as it appears on Understat (e.g., 'Liverpool', not 'liverpool')")
     else:
         st.warning("Please enter both team name and season year.")
 
@@ -336,6 +367,8 @@ if st.session_state.matches_loaded:
 
                 except Exception as e:
                     st.error(f"Error analyzing match: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
         else:
             st.warning("Please enter a Match ID.")
 
