@@ -155,61 +155,85 @@ if st.button("Load Matches", type="primary"):
             try:
                 match_data = get_team_results(target_team, int(target_season))
 
-                if match_data:
-                    df_matches = pd.DataFrame(match_data)
+                if match_data and len(match_data) > 0:
+                    # Process each match individually to handle None values
+                    processed_matches = []
                     
-                    # FIX: Add proper handling for None values in goals
-                    df_matches = df_matches[df_matches["goals"].notna()]
-                    
-                    # FIX: Add safer processing with proper None checks
-                    def get_opponent(row):
+                    for match in match_data:
                         try:
-                            if row["side"] == "h":
-                                team_data = row.get("a")
-                                if team_data and isinstance(team_data, dict):
-                                    return team_data.get("title", "Unknown")
+                            # Skip if essential fields are None
+                            if match.get('id') is None or match.get('datetime') is None:
+                                continue
+                            
+                            goals = match.get('goals')
+                            if goals is None or not isinstance(goals, dict):
+                                continue
+                            
+                            h_data = match.get('h')
+                            a_data = match.get('a')
+                            
+                            if h_data is None or not isinstance(h_data, dict):
+                                continue
+                            if a_data is None or not isinstance(a_data, dict):
+                                continue
+                            
+                            side = match.get('side', '')
+                            
+                            # Extract opponent based on side
+                            if side == 'h':
+                                opponent = a_data.get('title', 'Unknown')
+                            elif side == 'a':
+                                opponent = h_data.get('title', 'Unknown')
                             else:
-                                team_data = row.get("h")
-                                if team_data and isinstance(team_data, dict):
-                                    return team_data.get("title", "Unknown")
-                        except:
-                            pass
-                        return "Unknown"
+                                opponent = 'Unknown'
+                            
+                            # Extract result
+                            h_goals = goals.get('h')
+                            a_goals = goals.get('a')
+                            
+                            if h_goals is None or a_goals is None:
+                                continue
+                            
+                            result = f"{h_goals}-{a_goals}"
+                            
+                            # Create processed match dict
+                            processed_match = {
+                                'id': match.get('id'),
+                                'datetime': match.get('datetime'),
+                                'opponent': opponent,
+                                'result': result,
+                                'side': side,
+                                'h_goals': h_goals,
+                                'a_goals': a_goals,
+                            }
+                            
+                            processed_matches.append(processed_match)
+                            
+                        except Exception as e:
+                            # Skip problematic matches
+                            continue
                     
-                    df_matches["opponent"] = df_matches.apply(get_opponent, axis=1)
-                    
-                    # FIX: Add safer result processing
-                    def get_result(row):
-                        try:
-                            goals = row.get("goals")
-                            if goals and isinstance(goals, dict):
-                                h_goals = goals.get("h", 0)
-                                a_goals = goals.get("a", 0)
-                                if h_goals is not None and a_goals is not None:
-                                    return f"{h_goals}-{a_goals}"
-                        except:
-                            pass
-                        return "N/A"
-                    
-                    df_matches["result"] = df_matches.apply(get_result, axis=1)
-                    
-                    # Filter out any matches with invalid data
-                    df_matches = df_matches[df_matches["opponent"] != "Unknown"]
-                    df_matches = df_matches[df_matches["result"] != "N/A"]
-
-                    if len(df_matches) > 0:
+                    if len(processed_matches) > 0:
+                        df_matches = pd.DataFrame(processed_matches)
+                        
                         st.session_state.matches_loaded = True
                         st.session_state.match_data = match_data
                         st.session_state.df_matches = df_matches
                         st.session_state.target_team = target_team
-                        st.success(f"✅ Found {len(df_matches)} matches for {target_team}")
+                        st.success(f"✅ Found {len(df_matches)} valid matches for {target_team}")
                     else:
-                        st.warning("No valid matches found. Please check the team name and season.")
+                        st.warning("No valid matches found with complete data. The API may have returned incomplete data.")
                 else:
                     st.warning("No matches found. Please check the team name and season.")
+                    
             except Exception as e:
                 st.error(f"Error loading matches: {e}")
-                st.info("💡 Tip: Make sure the team name matches exactly as it appears on Understat (e.g., 'Liverpool', not 'liverpool')")
+                st.info("💡 Tips:\n- Make sure the team name matches exactly (e.g., 'Liverpool', not 'liverpool')\n- Try a different season year\n- The team may not have data for that season in Understat")
+                
+                # Show detailed error for debugging
+                import traceback
+                with st.expander("Show detailed error"):
+                    st.code(traceback.format_exc())
     else:
         st.warning("Please enter both team name and season year.")
 
@@ -368,7 +392,8 @@ if st.session_state.matches_loaded:
                 except Exception as e:
                     st.error(f"Error analyzing match: {e}")
                     import traceback
-                    st.code(traceback.format_exc())
+                    with st.expander("Show detailed error"):
+                        st.code(traceback.format_exc())
         else:
             st.warning("Please enter a Match ID.")
 
