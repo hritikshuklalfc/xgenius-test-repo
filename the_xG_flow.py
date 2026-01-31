@@ -38,6 +38,8 @@ HEADERS = {
     )
 }
 
+LEAGUES = ["epl", "la_liga", "bundesliga", "serie_a", "ligue1", "rfpl"]
+
 
 @st.cache_data(show_spinner=False)
 def get_team_results(team_name, season):
@@ -45,6 +47,16 @@ def get_team_results(team_name, season):
         async with aiohttp.ClientSession(headers=HEADERS) as session:
             understat = Understat(session)
             return await understat.get_team_results(team_name, season)
+
+    return asyncio.run(_fetch())
+
+
+@st.cache_data(show_spinner=False)
+def get_teams(league_name, season):
+    async def _fetch():
+        async with aiohttp.ClientSession(headers=HEADERS) as session:
+            understat = Understat(session)
+            return await understat.get_teams(league_name, season)
 
     return asyncio.run(_fetch())
 
@@ -86,20 +98,42 @@ if "df_matches" not in st.session_state:
 if "target_team" not in st.session_state:
     st.session_state.target_team = ""
 
-st.header("Step 1: Select Team and Season")
+st.header("Step 1: Select League, Team and Season")
 
 col1, col2 = st.columns(2)
 with col1:
-    target_team = st.text_input(
-        "Team Name",
-        placeholder="e.g., Liverpool, Arsenal, Manchester City",
-        help="Enter the team name as it appears on Understat",
-    )
+    league = st.selectbox("League", options=LEAGUES, index=0)
 with col2:
     target_season = st.text_input(
         "Season Year",
         placeholder="e.g., 2024, 2023",
         help="Enter the year of the season",
+    )
+
+use_team_list = st.checkbox("Use team list", value=True)
+
+target_team = ""
+if use_team_list:
+    if target_season:
+        try:
+            teams = get_teams(league, int(target_season))
+            team_names = sorted({team.get("title") for team in teams if team.get("title")})
+            if team_names:
+                target_team = st.selectbox("Team", options=team_names)
+            else:
+                st.warning("No teams found for this league/season. Use manual entry.")
+                use_team_list = False
+        except Exception as exc:
+            st.warning(f"Unable to load teams list: {exc}. Use manual entry.")
+            use_team_list = False
+    else:
+        st.info("Enter a season year to load the team list.")
+
+if not use_team_list:
+    target_team = st.text_input(
+        "Team Name",
+        placeholder="e.g., Liverpool, Arsenal, Manchester City",
+        help="Enter the team name as it appears on Understat",
     )
 
 if st.button("Load Matches", type="primary"):
