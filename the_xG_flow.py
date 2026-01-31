@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
 from understat import Understat
+import understat.utils as understat_utils
 
 
 nest_asyncio.apply()
@@ -37,6 +38,18 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+
+async def _patched_fetch(session, url):
+    headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": HEADERS["User-Agent"],
+    }
+    async with session.get(url, headers=headers) as response:
+        return await response.text()
+
+
+understat_utils.fetch = _patched_fetch
 
 LEAGUES = ["epl", "la_liga", "bundesliga", "serie_a", "ligue1", "rfpl"]
 
