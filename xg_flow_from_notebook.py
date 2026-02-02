@@ -6,13 +6,11 @@ pick a match, and plots cumulative xG for both teams.
 
 import asyncio
 import aiohttp
-import nest_asyncio
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import streamlit as st
 from understat import Understat
-
-nest_asyncio.apply()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -120,16 +118,24 @@ def plot_xg_flow(my_team_df, opp_df, target_team, opp_name):
     by_label = dict(zip(labels, handles))
     ax.legend(by_label.values(), by_label.keys(), loc="upper left", facecolor="#1e1e1e", labelcolor="white")
 
-    plt.show()
+    return fig
 
 
-def main():
-    target_team = input("Enter the name of the tean (e.g., Liverpool, Arsenal): ")
-    target_season = input("Enter Season Year (e.g., 2024, 2025): ")
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_matches(team_name, season):
+    return asyncio.run(xG_flow(team_name, season))
 
-    match_data = asyncio.run(xG_flow(target_team, target_season))
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_shots(match_id):
+    return asyncio.run(get_shot_info(match_id))
+
+
+def build_matches_df(match_data):
     df_matches = pd.DataFrame(match_data)
+    if df_matches.empty:
+        return df_matches
+
     df_matches = df_matches[df_matches["goals"].apply(lambda x: x is not None)]
 
     df_matches["opponent"] = np.where(
@@ -139,40 +145,79 @@ def main():
     )
 
     df_matches["result"] = df_matches.apply(
-        lambda row: str(row["goals"]["h"] + "-" + str(row["goals"]["a"])), axis=1
+        lambda row: f"{row['goals']['h']}-{row['goals']['a']}", axis=1
     )
 
-    print(f"\n --->MATCH LIST FOR {target_team.upper()}<---")
+    return df_matches
+
+
+def main():
+    st.set_page_config(page_title="xG Flow", layout="wide")
+    st.title("xG Flow Chart")
+
+    with st.sidebar:
+        st.header("Inputs")
+        target_team = st.text_input("Team name", value="Liverpool")
+        target_season = st.number_input("Season year", min_value=2014, max_value=2026, value=2022, step=1)
+        load_matches = st.button("Load matches")
+
+    if load_matches and target_team:
+        with st.spinner("Fetching matches..."):
+            match_data = fetch_matches(target_team, int(target_season))
+        st.session_state["match_data"] = match_data
+
+    match_data = st.session_state.get("match_data")
+    if not match_data:
+        st.info("Enter a team and season, then click Load matches.")
+        return
+
+    df_matches = build_matches_df(match_data)
+    if df_matches.empty:
+        st.warning("No matches found for that team and season.")
+        return
+
     display_cols = ["id", "datetime", "opponent", "result", "side"]
-    print(df_matches[display_cols].tail(10).to_string(index=False))
+    st.subheader("Match list")
+    st.dataframe(df_matches[display_cols].sort_values("datetime", ascending=False), use_container_width=True)
 
-    match_id = input("Paste the Match Id here: ")
-    shot_data = asyncio.run(get_shot_info(match_id))
+    options = df_matches[display_cols].sort_values("datetime", ascending=False)
+    option_labels = options.apply(
+        lambda row: f"{row['datetime']} | {row['opponent']} | {row['result']} | {row['side']} | ID {row['id']}",
+        axis=1,
+    ).tolist()
 
-    df_home = pd.DataFrame(shot_data["h"])
-    df_away = pd.DataFrame(shot_data["a"])
+    selected_label = st.selectbox("Choose a match", options=option_labels)
+    selected_id = options.iloc[option_labels.index(selected_label)]["id"]
 
-    df_home = clean_df(df_home)
-    df_away = clean_df(df_away)
+    if st.button("Generate xG flow"):
+        with st.spinner("Fetching shots..."):
+            shot_data = fetch_shots(str(selected_id))
 
-    home_team_name = df_home["h_team"].iloc[0]
-    away_team_name = df_home["a_team"].iloc[0]
+        df_home = pd.DataFrame(shot_data["h"])
+        df_away = pd.DataFrame(shot_data["a"])
 
-    if home_team_name == target_team:
-        my_team_df = df_home
-        opp_df = df_away
-        opp_name = away_team_name
-        my_side = "Home"
-    else:
-        my_team_df = df_away
-        opp_df = df_home
-        opp_name = home_team_name
-        my_side = "Away"
+        df_home = clean_df(df_home)
+        df_away = clean_df(df_away)
 
-    print(f"Data Loaded: {target_team} ({my_side} vs {opp_name})")
-    print(f"Data Loaded \n Home Shots: {len(df_home)} | Away Shots: {len(df_away)}")
+        home_team_name = df_home["h_team"].iloc[0]
+        away_team_name = df_home["a_team"].iloc[0]
 
-    plot_xg_flow(my_team_df, opp_df, target_team, opp_name)
+        if home_team_name == target_team:
+            my_team_df = df_home
+            opp_df = df_away
+            opp_name = away_team_name
+            my_side = "Home"
+        else:
+            my_team_df = df_away
+            opp_df = df_home
+            opp_name = home_team_name
+            my_side = "Away"
+
+        st.caption(f"Data Loaded: {target_team} ({my_side} vs {opp_name})")
+        st.caption(f"Home Shots: {len(df_home)} | Away Shots: {len(df_away)}")
+
+        fig = plot_xg_flow(my_team_df, opp_df, target_team, opp_name)
+        st.pyplot(fig, use_container_width=True)
 
 
 if __name__ == "__main__":
