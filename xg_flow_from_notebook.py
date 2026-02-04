@@ -246,19 +246,19 @@ HEADERS = {
 
 # Data Loading
 async def xG_flow(team_name, season):
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+    # Added trust_env=True to handle cloud network configs better
+    async with aiohttp.ClientSession(headers=HEADERS, trust_env=True) as session:
         understat = Understat(session)
-        print(f"Searching for {team_name} matches in {season}")
         try:
             result = await understat.get_team_results(team_name, season)
             return result
         except Exception as e:
-            # --- FIX 2: Better error logging ---
-            print(f"Error fetching matches: {e}")
+            # This will show the exact technical error on your app screen
+            st.error(f"Technical Error Details: {str(e)}")
             return []
 
 async def get_shot_info(match_id):
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+    async with aiohttp.ClientSession(headers=HEADERS, trust_env=True) as session:
         understat = Understat(session)
         try:
             shots = await understat.get_match_shots(match_id)
