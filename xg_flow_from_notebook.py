@@ -11,6 +11,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 from understat import Understat
+import nest_asyncio
+
+nest_asyncio.apply()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -178,7 +181,7 @@ def main():
 
     display_cols = ["id", "datetime", "opponent", "result", "side"]
     st.subheader("Match list")
-    st.dataframe(df_matches[display_cols].sort_values("datetime", ascending=False), use_container_width=True)
+    st.dataframe(df_matches[display_cols].sort_values("datetime", ascending=False), width="stretch")
 
     options = df_matches[display_cols].sort_values("datetime", ascending=False)
     option_labels = options.apply(
@@ -217,7 +220,7 @@ def main():
         st.caption(f"Home Shots: {len(df_home)} | Away Shots: {len(df_away)}")
 
         fig = plot_xg_flow(my_team_df, opp_df, target_team, opp_name)
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
 
 
 if __name__ == "__main__":
